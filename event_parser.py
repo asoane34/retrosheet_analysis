@@ -5,6 +5,13 @@ import datetime
 import sys
 import glob
 import os
+''' 
+RetrosheetEventFileParser is an object designed to parse Retrosheet play-by-play files into game level statistics. Each observation in the play-by-play
+files represents a single play from a baseball game: a hit, stolen base, out, wild pitch, etc. There are over 13 million of these event observations,
+and in order to use them to predict game outcome (winner and spread) I needed to aggregate these play observations into game observations. This
+object iterates through every season and writes each season to two .csv files: One collecting all team hitting and bullpen statistics, and the other
+collecting all starting pitcher statistics. 
+'''
 '''
 Retrosheet Event Codes... These are here for reference, dict is not used in script.
 COL_NAME: EVENT_CD
