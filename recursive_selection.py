@@ -27,9 +27,9 @@ NEXT UP: Recursive removal is not always that effective. Add randomized search c
 '''
 
 class FeatureSelector():
-    def __init__(self, X, y, algorithm = RandomForestClassifier(), scale = None, method = 'importance', metric = 'acc', stopping_thresh = 3, 
-    params = None, cv = 5, sample_size = 0.5, drop_size = 1, correlation_tolerance = 0.9, corr_lower_by = 0.1, correlation_strategy = 'tol',
-    n_iterations = 20, n_jobs = None):
+    def __init__(self, X, y, algorithm = RandomForestClassifier(), scale = None, method = 'importance', metric = 'acc', 
+    early_stopping = False, stopping_thresh = 3, params = None, cv = 5, sample_size = 0.5, drop_size = 1, correlation_tolerance = 0.9, 
+    corr_lower_by = 0.1, correlation_strategy = 'tol', n_iterations = 20, n_jobs = None):
         ''' 
         Initialize FeatureSelector object
             Args:
@@ -51,6 +51,7 @@ class FeatureSelector():
                     'precision' : precision
                     'f1' : f1 score
                     'rmse' : root mean squared error
+                early_stopping [bool]: Boolean flag to stop after specified rounds with improvement
                 stopping_thresh [int]: Number of iterations without improvement before returning
                 params [dict]: Specify hyperparameters for selected algorithm **IF USING 'importance', ALGORITHM MUST HAVE .feature_importances_
                 cv [int] : Number of folds for cross validation, default: 5
@@ -70,6 +71,7 @@ class FeatureSelector():
         self.scale = scale
         self.method = method
         self.metric = metric
+        self.early_stopping = early_stopping
         self.stopping_thresh = stopping_thresh
         self.params = params
         self.cv = cv
@@ -102,50 +104,39 @@ class FeatureSelector():
         '''
         if self.scale:
             self.scale_features()
-        no_improvement = 0
-        while True:
-            self.recursive_cv()
-            if self.current_eval >= self.best_eval:
-                self.best_subset = self.current_subset
-                self.best_eval = self.current_eval
-                no_improvement = 0
-            else:
-                no_improvement += 1
-            if no_improvement < self.stopping_thresh:
-                if self.method == 'importance':
-                    if len(self.importance_frame[self.importance_frame.importance == 0]) != 0:
-                        bottom_ = list(self.importance_frame[self.importance_frame.importance == 0].feature.values)
-                    else:
-                        cutoff = (-1 * self.drop_size) - 1
-                        bottom_ = list(self.importance_frame.feature.iloc[-1:cutoff:-1])
-                elif self.method == 'corr':
-                    bottom_ = self.get_correlated(self.X, self.correlation_tolerance, self.drop_size, self.correlation_strategy)
-                    if self.correlation_strategy == 'tol':
-                        self.correlation_tolerance -= self.corr_lower_by
-                    else:
-                        pass
-                elif self.method == 'both':
-                    if len(self.importance_frame[self.importance_frame.importance == 0]) != 0:
-                        bottom_ = list(self.importance_frame[self.importance_frame.importance == 0].feature.values)
-                    else:
-                        cutoff = (-1 * self.drop_size) - 1
-                        bottom_ = list(self.importance_frame.feature.iloc[-1:cutoff:-1])
-                    drop_ = self.get_correlated(self.X, self.correlation_tolerance, self.drop_size, self.correlation_strategy)
-                    if self.correlation_strategy == 'tol':
-                        self.correlation_tolerance -= self.corr_lower_by
-                    else:
-                        pass
-                    bottom_ += drop_
-                    bottom_ = list(dict.fromkeys(bottom_)) #drop potential duplicates from features to drop
+        if self.early_stopping:
+            no_improvement = 0
+            while True:
+                self.recursive_cv()
+                if self.current_eval >= self.best_eval:
+                    self.best_subset = self.current_subset
+                    self.best_eval = self.current_eval
+                    no_improvement = 0
                 else:
-                    raise ValueError('You have entered a method that is not valid, please select a valid method')
-                self.X = self.X.drop(columns = bottom_)
-                if len(bottom_) == 0:
+                    no_improvement += 1
+                if self.method == 'importance' or self.method == 'both':
+                    if self.drop_size > len(self.importance_frame):
+                        return('Cannot reduce feature frame anymore. Reduce drop size if desired')
+                if no_improvement < self.stopping_thresh:
+                    bottom_ = self.frame_reduction()
+                    if len(bottom_) == 0:
+                        return('Improvement has stopped. Check .best_subset and .best_eval')
+                    self.X = self.X.drop(columns = bottom_)
+                    print('{} features have been dropped, moving to next iteration'.format(len(bottom_)))
+                else:
                     return('Improvement has stopped. Check .best_subset and .best_eval')
+        else:
+            while True:
+                self.recursive_cv()
+                if self.current_eval >= self.best_eval:
+                    self.best_subset = self.current_subset
+                    self.best_eval = self.current_eval
+                if self.drop_size > len(self.importance_frame):
+                    return('Cannot reduce feature frame anymore. Reduce drop size if desired')
+                bottom_ = self.frame_reduction()
+                self.X = self.X.drop(columns = bottom_)
                 print('{} features have been dropped, moving to next iteration'.format(len(bottom_)))
-            else:
-                return('Improvement has stopped. Check .best_subset and .best_eval')
-    
+
     def random_selection(self):
         ''' 
         Second top level method for FeatureSelector object. Performs random search of feature subsets and records performance metrics for each
@@ -177,8 +168,6 @@ class FeatureSelector():
         self.current_eval = 0
         tuple_list = []
         self.current_subset = self.X.columns
-        if self.drop_size > len(self.current_subset):
-            raise ValueError('Drop size cannot be larger than total number of features remaining')
         self.feature_importances = np.zeros(len(self.current_subset))
         kf = KFold(n_splits = self.cv)
         with concurrent.futures.ProcessPoolExecutor(max_workers = self.n_jobs) as executor:
@@ -211,7 +200,37 @@ class FeatureSelector():
                 self.metric, self.method, params = self.params))
         for score in eval_list:
             self.current_eval += score.result()
-        
+
+    def frame_reduction(self):
+        if self.method == 'importance':
+            if len(self.importance_frame[self.importance_frame.importance == 0]) != 0:
+                bottom_ = list(self.importance_frame[self.importance_frame.importance == 0].feature.values)
+            else:
+                cutoff = (-1 * self.drop_size) - 1
+                bottom_ = list(self.importance_frame.feature.iloc[-1:cutoff:-1])
+        elif self.method == 'corr':
+            bottom_ = self.get_correlated(self.X, self.correlation_tolerance, self.drop_size, self.correlation_strategy)
+            if self.correlation_strategy == 'tol':
+                self.correlation_tolerance -= self.corr_lower_by
+            else:
+                pass
+        elif self.method == 'both':
+            if len(self.importance_frame[self.importance_frame.importance == 0]) != 0:
+                bottom_ = list(self.importance_frame[self.importance_frame.importance == 0].feature.values)
+            else:
+                cutoff = (-1 * self.drop_size) - 1
+                bottom_ = list(self.importance_frame.feature.iloc[-1:cutoff:-1])
+            drop_ = self.get_correlated(self.X, self.correlation_tolerance, self.drop_size, self.correlation_strategy)
+            if self.correlation_strategy == 'tol':
+                self.correlation_tolerance -= self.corr_lower_by
+            else:
+                pass
+            bottom_ += drop_
+            bottom_ = list(dict.fromkeys(bottom_)) #drop potential duplicates from features to drop
+        else:
+            raise ValueError('You have entered a method that is not valid, please select a valid method')
+        return(bottom_)
+
     def scale_features(self):
         ''' 
         Scale feature frame based on value provided in __init__
