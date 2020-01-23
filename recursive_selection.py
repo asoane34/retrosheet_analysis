@@ -27,7 +27,7 @@ NEXT UP: Recursive removal is not always that effective. Add randomized search c
 '''
 
 class FeatureSelector():
-    def __init__(self, X, y, algorithm = RandomForestClassifier(), scale = None, method = 'importance', metric = 'acc', 
+    def __init__(self, X, y, algorithm = RandomForestClassifier(), scale = None, method = 'importance', metric = 'acc', drop_corr = False,
     early_stopping = False, stopping_thresh = 3, params = None, cv = 5, sample_size = 0.5, drop_size = 1, correlation_tolerance = 0.9, 
     corr_lower_by = 0.1, correlation_strategy = 'tol', n_iterations = 20, n_jobs = None):
         ''' 
@@ -51,6 +51,9 @@ class FeatureSelector():
                     'precision' : precision
                     'f1' : f1 score
                     'rmse' : root mean squared error
+                drop_corr [bool] : Boolean flag to drop correlated features above a certain tolerance before performing recursive feature 
+                    selection. Can be used with either recursive or random selection. This is an alternative to recursively removing 
+                    correlated features using method: 'corr', so keep flag as False if using method 'corr'.
                 early_stopping [bool]: Boolean flag to stop after specified rounds with improvement
                 stopping_thresh [int]: Number of iterations without improvement before returning
                 params [dict]: Specify hyperparameters for selected algorithm **IF USING 'importance', ALGORITHM MUST HAVE .feature_importances_
@@ -60,7 +63,7 @@ class FeatureSelector():
                 correlation_tolerance [float] : Level of tolerance for correlated features
                 corr_lower_by [float] : Amount to lower correlation tolerance in each iteration. Default: 0.1
                 correlation_strategy [str] : How to approach removing correlated features. Acceptable arguments:
-                    'r' : Recursive, use drop_size parameter same as feature importance to remove n most correlated in each iteration
+                    'flat' : Flat, use drop_size parameter same as feature importance to remove n most correlated in each iteration
                     'tol' : Tolerance, use correlation_tolerance parameter and remove a feature from all feature sets over correlation tolerance
                 n_iterations [int] : Number of rounds of random feature selection to perform.
                 n_jobs [int] : Number of processors to use. Default: None, all processors
@@ -71,6 +74,7 @@ class FeatureSelector():
         self.scale = scale
         self.method = method
         self.metric = metric
+        self.drop_corr = drop_corr
         self.early_stopping = early_stopping
         self.stopping_thresh = stopping_thresh
         self.params = params
@@ -93,10 +97,7 @@ class FeatureSelector():
     
     def recursive_selection(self):
         ''' 
-        One of two top level methods of FeatureSelector object. While stopping_thresh is True, indicating model scoring is improving, calls 
-        feature_importance_cv to generate dataframe of feature importances and drop the number of features with zero importance or
-        the number of features specified in the __init__ parameter drop_size. Recommend playing with the number for drop size if improvement
-        is not being seen.
+        One of two top level methods of FeatureSelector object. Offers 
             Args: 
                 None
             Returns: 
@@ -104,6 +105,9 @@ class FeatureSelector():
         '''
         if self.scale:
             self.scale_features()
+        if self.drop_corr:
+            _drop = self.get_correlated(self.X, self.correlation_tolerance, self.drop_size, self.correlation_strategy)
+            self.X = self.X.drop(columns = _drop)
         if self.early_stopping:
             no_improvement = 0
             while True:
@@ -144,6 +148,9 @@ class FeatureSelector():
         '''
         if self.scale:
             self.scale_features()
+        if self.drop_corr:
+            _drop = self.get_correlated(self.X, self.correlation_tolerance, self.drop_size, self.correlation_strategy)
+            self.X = self.X.drop(columns = _drop)
         for j in range(self.n_iterations):
             self.random_cv()
             self.performance_log['iteration_number'] = j
@@ -187,6 +194,16 @@ class FeatureSelector():
                 self.current_eval += score.result()
         
     def random_cv(self):
+        ''' 
+        Method to perform cross-fold validation using randomly generated subsets of features. Key difference between random_cv and recursive_cv
+        is that random_cv does not effect primary dataframe X, but rather makes a copy, X_reduced, using a subset of the features, and then 
+        performs cross validation on the copy. This is important because this method is not recursive, and thus the full set of features will be 
+        randomly sampled during each iteration. 
+            Args:
+                None
+            Returns:
+                None
+        '''
         self.current_eval = 0
         eval_list = []
         self.current_subset = self.generate_subsets(self.X.columns, self.sample_size)
@@ -202,6 +219,13 @@ class FeatureSelector():
             self.current_eval += score.result()
 
     def frame_reduction(self):
+        ''' 
+        Method to generate list of features to be dropped before next iteration. 
+            Args:
+                None
+            Returns:
+                bottom_ [list] : list of features to be dropped
+        '''
         if self.method == 'importance':
             if len(self.importance_frame[self.importance_frame.importance == 0]) != 0:
                 bottom_ = list(self.importance_frame[self.importance_frame.importance == 0].feature.values)
@@ -301,7 +325,7 @@ class FeatureSelector():
             for j in range(len(over_tol_)):
                 if over_tol_.index[j][1] not in drop_list:
                     drop_list.append(over_tol_.index[j][1])
-        elif strategy == 'r':
+        elif strategy == 'flat':
             for j in range(drop_size):
                 if all_correlated.index[j][1] not in drop_list:
                     drop_list.append(all_correlated.index[j][1])
