@@ -6,7 +6,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler #scale data
 from sklearn.model_selection import KFold #generate train/test split indices
 from sklearn.ensemble import RandomForestClassifier #default algorithm, can pass other algorithms as long as they have sklearn wrapper
 from sklearn.metrics import accuracy_score, precision_score, f1_score, mean_squared_error #possible scoring metrics
-
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 ''' 
 FeatureSelector is an object that hopefully serves as a jumping-off point in Feature Selection. Given a feature DataFrame and a target array, 
 FeatureSelector performs recursive or random feature selection using feature importance, colinearity, or a combination of the two. At the moment,
@@ -18,18 +18,10 @@ The default algorithm is the RandomForestClassifier with default hyperparameters
 'params' parameter.
 '''
 
-''' 
-NEXT UP: Recursive removal is not always that effective. Add randomized search capability. To-dos:
-    - Add a log: need to be able to keep track of how different subsets of features are performing. Optimize off this log? (think hyperopt)
-    - Batch size: control subset of features being sampled. Perhaps a variable randomly chosen batch size?
-    - Make compatible with removing overly correlated features. This method won't work with feature importances but it could definitely still 
-    incorporate removing overly correlated features
-'''
-
 class FeatureSelector():
     def __init__(self, X, y, algorithm = RandomForestClassifier(), scale = None, method = 'importance', metric = 'acc', drop_corr = False,
-    early_stopping = False, stopping_thresh = 3, params = None, cv = 5, sample_size = 0.5, drop_size = 1, correlation_tolerance = 0.9, 
-    corr_lower_by = 0.1, correlation_strategy = 'tol', n_iterations = 20, n_jobs = None):
+    VIF = False, VIF_tol = 10.0, early_stopping = False, stopping_thresh = 3, params = None, cv = 5, sample_size = 0.5, drop_size = 1, 
+    correlation_tolerance = 0.9, corr_lower_by = 0.1, correlation_strategy = 'tol', n_iterations = 20, n_jobs = None, verbose = 0):
         ''' 
         Initialize FeatureSelector object
             Args:
@@ -54,6 +46,8 @@ class FeatureSelector():
                 drop_corr [bool] : Boolean flag to drop correlated features above a certain tolerance before performing recursive feature 
                     selection. Can be used with either recursive or random selection. This is an alternative to recursively removing 
                     correlated features using method: 'corr', so keep flag as False if using method 'corr'.
+                VIF [bool] : boolean flag to recursively remove features with VIF over a given tolerance
+                VIF_tol [int/float] : Int/float with maximum level of tolerance for VIF
                 early_stopping [bool]: Boolean flag to stop after specified rounds with improvement
                 stopping_thresh [int]: Number of iterations without improvement before returning
                 params [dict]: Specify hyperparameters for selected algorithm **IF USING 'importance', ALGORITHM MUST HAVE .feature_importances_
@@ -67,6 +61,10 @@ class FeatureSelector():
                     'tol' : Tolerance, use correlation_tolerance parameter and remove a feature from all feature sets over correlation tolerance
                 n_iterations [int] : Number of rounds of random feature selection to perform.
                 n_jobs [int] : Number of processors to use. Default: None, all processors
+                verbose [int]: level of status updates from object. Acceptable values:
+                    0 : No updates
+                    1 : Update when finished running
+                    2 : Update afer each iteration
         '''
         self.X = X
         self.y = y
@@ -75,6 +73,8 @@ class FeatureSelector():
         self.method = method
         self.metric = metric
         self.drop_corr = drop_corr
+        self.VIF = VIF
+        self.VIF_tol = VIF_tol
         self.early_stopping = early_stopping
         self.stopping_thresh = stopping_thresh
         self.params = params
@@ -86,6 +86,7 @@ class FeatureSelector():
         self.correlation_strategy = correlation_strategy
         self.n_iterations = n_iterations
         self.n_jobs = n_jobs
+        self.verbose = verbose
         self.X_reduced = None
         self.current_eval = 0
         self.best_eval = 0
@@ -105,6 +106,8 @@ class FeatureSelector():
         '''
         if self.scale:
             self.scale_features()
+        if self.VIF:
+            self.recursive_VIF()
         if self.drop_corr:
             _drop = self.get_correlated(self.X, self.correlation_tolerance, self.drop_size, self.correlation_strategy)
             self.X = self.X.drop(columns = _drop)
@@ -126,7 +129,8 @@ class FeatureSelector():
                     if len(bottom_) == 0:
                         return('Improvement has stopped. Check .best_subset and .best_eval')
                     self.X = self.X.drop(columns = bottom_)
-                    print('{} features have been dropped, moving to next iteration'.format(len(bottom_)))
+                    if self.verbose == 2:
+                        print('{} features have been dropped, moving to next iteration'.format(len(bottom_)))
                 else:
                     return('Improvement has stopped. Check .best_subset and .best_eval')
         else:
@@ -139,7 +143,8 @@ class FeatureSelector():
                     return('Cannot reduce feature frame anymore. Reduce drop size if desired')
                 bottom_ = self.frame_reduction()
                 self.X = self.X.drop(columns = bottom_)
-                print('{} features have been dropped, moving to next iteration'.format(len(bottom_)))
+                if self.verbose == 2:
+                    print('{} features have been dropped, moving to next iteration'.format(len(bottom_)))
 
     def random_selection(self):
         ''' 
@@ -148,6 +153,8 @@ class FeatureSelector():
         '''
         if self.scale:
             self.scale_features()
+        if self.VIF:
+            self.recursive_VIF()
         if self.drop_corr:
             _drop = self.get_correlated(self.X, self.correlation_tolerance, self.drop_size, self.correlation_strategy)
             self.X = self.X.drop(columns = _drop)
@@ -159,7 +166,8 @@ class FeatureSelector():
             if self.current_eval > self.best_eval:
                 self.best_eval = self.current_eval
                 self.best_subset = self.current_subset
-            print('Last subset score: {}. Moving to next iteration'.format(self.current_eval))
+            if self.verbose == 2:
+                print('Last subset score: {}. Moving to next iteration'.format(self.current_eval))
         print('Random search complete, best score was: {}'.format(self.best_eval))
          
     def recursive_cv(self):
@@ -269,6 +277,31 @@ class FeatureSelector():
             self.X = pd.DataFrame(XM)
             self.X.columns = cols
 
+    def recursive_VIF(self):
+        ''' 
+        Method to remove features over a set threshold for Variance Inflation Factor. note: adding column of constants is necessary to properly apply
+        variance inflation factor function.
+        '''
+        dummies = self.get_dummies(self.X)
+        dummy_df = self.X[dummies]
+        self.X = self.X.drop(columns = dummies)
+        while True:
+            self.X = self.X.assign(constant = 1)
+            X_cols = list(self.X.columns)
+            npX = np.array(self.X)
+            vif = [variance_inflation_factor(npX, i) for i in np.arange(npX.shape[1])]
+            vif_ = pd.Series(vif, index = X_cols)
+            vif_ = vif_.drop('constant')
+            max_vif = vif_.idxmax()
+            if vif_.max() > self.VIF_tol:
+                self.X = self.X.drop(columns = [max_vif, 'constant'])
+                if self.verbose == 2:
+                    print('{} has been dropped'.format(max_vif))
+            else:
+                self.X = self.X.drop(columns = ['constant'])
+                self.X = pd.concat([self.X, dummy_df], axis = 1)
+                return
+    
     @staticmethod
     def fit_train_test(x_train, x_test, y_train, y_test, algorithm, cv, metric, method, params = None):
         ''' 
@@ -355,3 +388,18 @@ class FeatureSelector():
         for i in subset_indices:
             subset.append(features[i])
         return(subset)
+
+    @staticmethod
+    def get_dummies(X):
+        ''' 
+        Factory method to determine if variables are binary / dummy variables. This is necessary to calculate VIF.
+        Args:
+            X [pd.DataFrame] : pandas dataframe object
+        Returns:
+            [list] : list of feature names for dummy variables. 
+        '''
+        dummy_list = []
+        for col in X.columns:
+            if len(X[col].unique()) <= 2:
+                dummy_list.append(col)
+        return(dummy_list)
