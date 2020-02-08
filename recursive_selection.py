@@ -142,7 +142,10 @@ class FeatureSelector():
                 if self.drop_size > len(self.importance_frame):
                     return('Cannot reduce feature frame anymore. Reduce drop size if desired')
                 bottom_ = self.frame_reduction()
-                self.X = self.X.drop(columns = bottom_)
+                try:
+                    self.X = self.X.drop(columns = bottom_)
+                except:
+                    return('Cannot reduce feature frame anymore. Reduce drop size if desired')
                 if self.verbose == 2:
                     print('{} features have been dropped, moving to next iteration'.format(len(bottom_)))
 
@@ -183,6 +186,8 @@ class FeatureSelector():
         self.current_eval = 0
         tuple_list = []
         self.current_subset = self.X.columns
+        if len(self.current_subset) == 0:
+            return('Cannot reduce frame anymore. Check best eval')
         self.feature_importances = np.zeros(len(self.current_subset))
         kf = KFold(n_splits = self.cv)
         with concurrent.futures.ProcessPoolExecutor(max_workers = self.n_jobs) as executor:
