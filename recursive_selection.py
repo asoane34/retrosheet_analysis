@@ -7,6 +7,7 @@ from sklearn.model_selection import KFold #generate train/test split indices
 from sklearn.ensemble import RandomForestClassifier #default algorithm, can pass other algorithms as long as they have sklearn wrapper
 from sklearn.metrics import accuracy_score, precision_score, f1_score, mean_squared_error #possible scoring metrics
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+
 ''' 
 FeatureSelector is an object that hopefully serves as a jumping-off point in Feature Selection. Given a feature DataFrame and a target array, 
 FeatureSelector performs recursive or random feature selection using feature importance, colinearity, or a combination of the two. At the moment,
