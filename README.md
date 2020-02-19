@@ -1,8 +1,6 @@
 # retrosheet_analysis
 Modeling to predict outcome of MLB baseball games and generate a profitable betting strategy.
 
-There is an old adage in any kind of gambling: "The House Always Wins." For this most part this i
-
 # Current Repository Contents
 
 ## data_prep/
