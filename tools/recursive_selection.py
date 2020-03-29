@@ -251,8 +251,14 @@ class FeatureSelector():
 
                 self.current_eval += pair.result()[0]
 
-                self.feature_importances += pair.result()[1]
-
+                try:
+                    
+                    self.feature_importances += pair.result()[1]
+                    
+                except:
+                    
+                    self.feature_importances += pair.result()[1][0]
+                    
             self.importance_frame = pd.DataFrame({'feature' : self.current_subset, 'importance' : self.feature_importances})
 
             self.importance_frame = self.importance_frame.sort_values(by = ['importance'], ascending = False).reset_index(drop = True)
@@ -503,10 +509,6 @@ class FeatureSelector():
             except:
 
                 feature_importance = algo.coef_
-
-            else:
-
-                raise AttributeError("Algorithm does not support feature_importances_ or coef_")
 
             return( (score, feature_importance) )
         else:
