@@ -14,16 +14,91 @@ The reason being is the aforementioned VIG: Betting favorites, who win more freq
 
 ## Methodology
 
-There are many different ways to frame and approach this problem, and I have tried nearly all of them. The problem can be framed as a Regression problem, a Binary Classification problem, or a Multi-Class classification problem. While I would enjoy discussing all the different methods and their respective shortcomings and strengths, in the interest of time I will only discuss three methods that showed promising results. 
+There are many different ways to frame and approach this problem, and I have tried nearly all of them. The problem can be framed as a Regression problem, a Binary Classification problem, or a Multi-Class classification problem. While I would enjoy discussing all the different methods and their respective shortcomings and strengths, in the interest of time I will only discuss two methods that showed promising results. 
 
-## Data
-__NOTE: I am working on an entire feature / data exploration section where I outline what all the different features mean, this is not that__ The three models outlined below are all trained on different feature sets. I will include the features used in each model and the data preparation techniques within each model. However, the commonality of all models is that they were trained on data from past seasons and used to predict the 2019 season. The point is to use past seasons to build a model to predict the next season, so randomly splitting into training and validation sets did not make sense in this case. 
+## A Note on Data
+The three models outlined below are all trained on different feature sets. I will include the features used in each model and the data preparation techniques within each model. However, the commonality of all models is that they were trained on data from past seasons and used to predict the 2019 season. The point is to use past seasons to build a model to predict the next season, so randomly splitting into training and validation sets did not make sense in this case. 
+
+## Deep Learning - Binary Classification with Gaussian Rank Scaler
+
+__Notebook reference: GAUSSRANK_FEEDFORWARD_NN.ipynb__
+
+One techniques that showed promise was a Fully Connected Feed Forward, Back Propagation Deep Neural Network. This is the only model that was trained on the entire feature set. Each continuous feature was prepared with a technique called GaussRank scaling. The algorithm is as follows: 
+
+* Each unique value in given feature $\alpha_{i}$ is ranked and forced into a distribution between $[-1, 1]$. 
+* Sufficiently small $\epsilon$ is chosen and applied to $min(\alpha_{i})$ and $max(\alpha_{i})$ such that the domain endpoints are not inclusive: $(-1, 1)$
+* The inverse error function is applied to each value. The Gaussian error function is defined as:
+    
+    $$erf(x) = \frac{1}{\sqrt\pi}\int_{-x}^{x}e^{-t^{2}}dt$$
+
+    This represents the probability that for a random variable $Z$ with $\mu = 0$ and $\sigma = \frac{1}{2}$,  $erf(x)$ is the probability that $Z$ falls in the range $[-x, x]$. The inverse of this function maps the ranked values to a Gaussian distribution.
+
+I selected a GaussRank scaler for several reasons. Rank transformations are robust to outliers and there were large outliers in the dataset, particulary in the beginning of seasons. However, they were not removed because the observatoins were accurate. There also was huge differences in variance of features, and thus normalization is beneficial. 
+
+One drawback of the GaussRank scaler: the implementation of the GaussRankScaler that I used <https://github.com/aldente0630/gauss_rank_scaler> does not extrapolate. Intuitively, this makes sense as a value outside the feature's distribution would be outside of the ranked values. Thus, when the transformer object was fit to the training dataset and used to transform the test dataset, a handful of observations were dropped. I am writing an implementation of the GaussRankScaler that addresses this problem, but as of the time of this writing that is not complete. 
+
+The model was trained using Keras, a high level Python API to train Neural Networks on top of the powerful Tensorflow library. 
+
+![nn_arc1](neural_net/gaussrankplot.png)
+
+The architecture for the model, seen above was as follows:
+
+* Densely Connected Input Layer - ReLU activations
+* Batch Normalization Layer - Scale activations to Mean $0$ and Standard Deviation $1$.
+* Dropout Layer - Reset fraction of activations to $0$.
+* Dense Hidden Layer - ReLU activations
+* Batch Normalization Layer
+* Dropout Layer
+* Dense Hidden Layer- ReLu activations
+* Batch Normalization Layer
+* Dropout Layer
+* Dense Output Layer- Sigmoid activation
+
+Each densely connected hidden layer contained $250$ neurons. A Dropout layer fraction of $0.50$ was used in each dropout layer to avoid overfitting. Weights were initialized using the Glorot Normal Distribution: 
+
+$$Weight_{i} \in \bigg[-\frac{\sqrt{6}}{Units_{input} + Units_{output}}, \frac{\sqrt{6}}{Units_{input} + Units_{output}}\bigg]$$
+
+The model was compiled and trained with the following hyperparameters:
+
+* Objective function: Binary crossentropy:
+* Optimizer: Adam - a stochastic optimizer, please see <https://arxiv.org/abs/1412.6980v8> for a detailed explanation.
+* beta_1 = $0.9$ (optimizer param)
+* beta_2 = $0.999$ (optimizer param)
+* Learning rate: $0.001$ (optimizer param)
+* Batch size: $512$
+* Epochs: $25$
+
+The resulting scheme was a vast improvement over the FiveThirtyEight model:
+
+![GaussRankFullPlot](neural_net/bankroll_images/gauss_rank_FF.png)
+
+I evaluated the model on the entire season as that was how I evaluated the FiveThirtyEight model, but if we take the model predictions and attempt an arbitrage strategy, there are other promising results. 
+
+![GaussRankHomeDogs](neural_net/bankroll_images/GR_home_dogs.png)
+
+By betting on only home underdogs, the model is able to generate $44.8\%$ of the profit with only $5\%$ of the plays.
+
+Keep in mind, a betting line is nothing more than an implied win probability. A betting line of $-150$ can be represented as follows: 
+
+$$\frac{1}{1+\frac{100}{150}} = 0.6$$
+
+Thus, by applying this transformation to the probabilities returned by the model, I am able to compare the lines the model generates to the actual lines and determine discrepancies.
+
+If I create a simple arbitrage strategy: 
+
+1. If the model predicted home payout is lower than the actual home payout (the model thinks the home team should be a larger favorite), bet the home team.
+
+2. If the model predicted home payout is higher than the actual home payout (the model thinks the home team should be a larger underdog), bet the road team
+
+the results are better still:
+
+![GaussRankArbitrage](neural_net/bankroll_images/arbitrage.png)
 
 ## Deep Learning - Binary Classification with Custom Loss Function
 
-Standard loss functions used in Binary Classification, such as the Log-Loss function and Hinge loss, are not optimized for the task at hand. One way to work around this is to write a loss function that teaches a model how to identify good bets versus bad bets instead of wins versus losses. This loss function looks like this: 
+Standard loss functions used in Binary Classification, such as binary cross entropy used above, are not optimized for the task at hand. One way to work around this is to write a loss function that teaches a model how to identify good bets versus bad bets instead of wins versus losses. This loss function looks like this: 
 
-$L\bigg(y, \hat{y}\bigg) = \displaystyle\sum_{i}^{n}\bigg(P_{1}^{(i)}*y-1\bigg)*ReLU\bigg(P_{1}^{(i)}*\hat{y} -1\bigg) + \bigg(P_{2}^{(i)}*(y-1)-1\bigg)*ReLU\bigg(P_{2}^{(i)}*(1 - \hat{y})-1\bigg)$
+$$L\bigg(y, \hat{y}\bigg) = \displaystyle\sum_{i}^{n}\bigg(P_{1}^{(i)}*y-1\bigg)*ReLU\bigg(P_{1}^{(i)}*\hat{y} -1\bigg) + \bigg(P_{2}^{(i)}*(y-1)-1\bigg)*ReLU\bigg(P_{2}^{(i)}*(1 - \hat{y})-1\bigg)$$
 
 where 
 
@@ -32,12 +107,10 @@ where
 
 The $ReLU$ function (Rectified Linear Unit) simulates a betting strategy as it only "places" a bet when the value is greater than $0$ and whereas other loss functions punish inaccurate outcome prediction, this loss function punishes bets with no value. An example to illustrate this: Placing a 100 dollar bet on a $-340$ betting favorite has a potential payout of $29$ dollars if the betting favorite wins, while the potential is still $100$. There is limited value to winning such a bet with the same amount of risk as betting on a $+140$ underdog, which would payout $140$ dollars. Now, obviously, the $-340$ favorite will win more often than the $+140$ underdog, but this loss function searches for the bets with value.  
 
-![NNOutline](neural_net/nn_5.svg)
-
-The feature set used in this model was:
-* Home Team and Road Team OPS (On-Base Percentage + Slugging Percentage)
-* Home Team and Road Team Bullpen ERA (Earned Run Average of all relief pitchers)
-* Home Starter and Road Starter career ERA (Earned Run Average of Starting Pitcher, career)
+The feature set used in this model was a fraction of full feature set:
+* Home Team and Road Team wRC+
+* Home Team and Road Team Bullpen wRC+ against
+* Home Starter and Road Starter career wRC+ against
 * Home and Road Starter season ERA (Earned Run Average of Starting Pitcher, season)
 * Home record at home (Number of games above or below .500, 0-based)
 * Average Margin of Victory or Loss for Home Team and Road Team
@@ -45,38 +118,38 @@ The feature set used in this model was:
 * Road team record on road (number of games above or below .500, 0-based)
 * Current Streak for Home team and Road Team (Either record in last ten games, number of games above or below .500, or if they have won more than ten games in a row, number of consecutive wins) 
 
-Features were selected recursively by training tree-based models (LightGBM, XGBoost, RandomForestClassifier) with 5-fold cross validation, removing the least important features, and re-training until performance stopped improving. Then I selected the features that were important to the all three algorithms. (__see FeatureSelector object in recursive_selection.py__) 
+The features were scaled to $\mu = 0$ and $\sigma = 1$.
 
-The model was trained using Keras, a high level Python API to train Neural Networks on top of the powerful Tensorflow library. Keras also has functionality to define and implement a custom loss function, which was critical to this particular model. The model is a Fully Connected Neural Network, and the architecture of the model as follows: __need to add math/more in-depth explanation here__
+The model was trained also trained using Keras. Keras has functionality for designing and implementing a custom loss function, which was critical for this model design. 
+
+![ModelArc2](neural_net/custom_loss.png)
 
 * Dense Input Layer - ReLU activations
 * Batch Normalization Layer - Scale activations to Mean $0$ and Standard Deviation $1$.
 * Dense Hidden Layer - ReLU activations
-* Batch Normalization Layer
 * Dense Hidden Layer- ReLu activations
-* Batch Normalization Layer
 * Dense Output Layer- Sigmoid activation
 
-Each densely connected hidden layer contained 50 neurons. I experimented with many different configurations of model architecture and experimented with the use of Dropout layers to avoid overfitting, but this model produced the strongest results.
+Each densely connected hidden layer contained 50 neurons. I experimented with many different configurations of model architecture and experimented with the use of Dropout layers to avoid overfitting and Batch Normalization layers, but this model produced the strongest results.
 
 The model was compiled and trained with:
 * Objective function: Custom (outlined above)
 * Optimizer: Adam
-* Learning rate: 0.001
-* Batch size: 32
-* Epochs: 100
+* beta_1 = $0.9$
+* beta_2 = $0.99$
+* Learning rate: $0.001$
+* Batch size: $32$
+* Epochs: $100$
 
 The resulting scheme produced a vast improvement over the SGDClassifier and FiveThirtyEight predictions. 
 
 ![NNResults](neural_net/bankroll_images/deep_learning.png)
 
-Taking this model further: 
-The current model predicts every single game. A model that less plays with a higher winning rate would be ideal. For example, by only betting the underdogs, we can achieve half the profit with one sixth of the plays. 
+Due to nature of the loss function (the ReLu function), the probabilities returned by the model were all either very close to $1$ or $0$. Thus, generating an arbitrage strategy as above was not possible. However, there was some additional success if only underdogs were played:
 
 ![NNResults2](neural_net/bankroll_images/only_dogs.png)
 
-This is not a perfect strategy: I'd like to avoid losing $2000$ dollars the first half of the season. But this is what I will continue to pursue - selecting which picks to use from the model.
 
-## Regression - Line Prediction 
+## Conclusion
 
-There are two ways to frame this as a regression problem. The first is to attempt to predict the final score of the game. This failed miserably: please see __01regression_attempt.ipynb__. However, there was a different way to frame the problem that proved more effective. Instead of predicting the outcome of the game, I built a model to predict the betting line and then generated a betting strategy using this model. 
+Don't quit your day job. 
